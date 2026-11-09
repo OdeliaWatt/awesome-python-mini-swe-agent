@@ -1,0 +1,86 @@
+name: Deploy Website
+
+on:
+  push:
+    branches: [master]
+  schedule:
+    - cron: "0 0 * * *"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+
+jobs:
+  deploy:
+    if: ${{ github.repository == 'OdeliaWatt/awesome-python-mini-swe-agent' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: "https://awesome-python.com/"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies
+        run: uv sync --locked --group build --group test
+
+      - name: Run tests
+        if: ${{ github.event_name == 'schedule' }}
+        run: uv run pytest website/tests/ -v
+
+      - name: Determine UTC cache date
+        id: cache-date
+        run: echo "date=$(date -u +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore GitHub stars cache
+        id: stars-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: website/data/github_stars.json
+          key: github-stars-${{ steps.cache-date.outputs.date }}
+          restore-keys: |
+            github-stars-
+
+      - name: Fetch GitHub stars
+        id: fetch-stars
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: uv run python website/fetch_github_stars.py
+
+      - name: Save GitHub stars cache
+        if: ${{ steps.fetch-stars.outcome == 'success' && steps.stars-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: website/data/github_stars.json
+          key: github-stars-${{ steps.cache-date.outputs.date }}
+
+      - name: Validate GitHub stars data
+        run: |
+          test -f website/data/github_stars.json
+          uv run python -m json.tool website/data/github_stars.json > /dev/null
+
+      - name: Build website
+        run: uv run python website/build.py
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: website/output
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
